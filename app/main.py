@@ -6,7 +6,7 @@ FastAPI entry point for PyTrack backend.
 
 from fastapi import FastAPI
 from app.supabase_client import supabase
-from app.routes import user
+from app.routes import user, task
 
 app = FastAPI(
     title="PyTrack Backend",
@@ -16,6 +16,7 @@ app = FastAPI(
 
 # Include routers
 app.include_router(user.router)
+app.include_router(task.router)
 
 @app.get("/")
 def root():
