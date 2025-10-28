@@ -1,42 +1,80 @@
 """
 auth.py
 ----------
-Handles Supabase Auth: signup, login, user listing.
+Handles Supabase Auth: signup, login, user listing + server-verified current user.
 """
+
+from dataclasses import dataclass
+from typing import Optional
 
 from app.supabase_client import supabase, supabase_admin
 from jose import jwt, JWTError
-import os
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 security = HTTPBearer()
 
+# -------------------------
+# Public user object for routes
+# -------------------------
+@dataclass
+class User:
+    id: str
+    email: Optional[str] = None
+
+# -------------------------
+# (Optional) Lightweight, unverified claim reader
+# Keep for debugging / non-critical flows only.
+# -------------------------
 def verify_supabase_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    Verify JWT token from Supabase Auth.
-    Accepts the token sent via Authorization: Bearer <token>
+    Reads JWT claims without verifying signature.
+    Prefer `get_current_user` for real auth in routes.
     """
     token = credentials.credentials
     try:
         payload = jwt.get_unverified_claims(token)
-        # Supabase uses 'sub' for user ID
-        user_id = payload.get("sub")
+        user_id = payload.get("sub")   # Supabase uses 'sub' for user id
         email = payload.get("email")
-
         if user_id is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid Supabase token.",
             )
         return {"user_id": user_id, "email": email}
-
     except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Token verification failed: {str(e)}",
         )
 
+# -------------------------
+# Strong verification via Supabase (recommended)
+# -------------------------
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
+    """
+    Validates the Bearer token with Supabase (server-side) and returns a User object.
+    Uses the SERVICE ROLE client to ensure signature & expiry are checked by Supabase.
+    """
+    token = credentials.credentials
+    try:
+        resp = supabase_admin.auth.get_user(token)
+        if not getattr(resp, "user", None):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token.",
+            )
+        u = resp.user
+        return User(id=u.id, email=getattr(u, "email", None))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Token verification failed: {str(e)}",
+        )
+
+# -------------------------
+# User management helpers
+# -------------------------
 def register_user(email: str, password: str, role: str = "employee"):
     """
     Register a new user (employee or superuser) via Supabase Auth.
@@ -50,7 +88,6 @@ def register_user(email: str, password: str, role: str = "employee"):
             return {"status": "error", "message": str(response)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
 
 def create_user_metadata(user_id: str, email: str, role: str = "employee"):
     """Insert into users table to store role metadata."""
@@ -72,7 +109,7 @@ def register_superuser(email: str, password: str):
 def login_user(email: str, password: str):
     """
     Log in existing user with Supabase Auth.
-    Returns access token if successful.
+    Returns access and refresh tokens if successful.
     """
     try:
         response = supabase.auth.sign_in_with_password({"email": email, "password": password})
@@ -89,9 +126,9 @@ def login_user(email: str, password: str):
         return {"status": "error", "message": str(e)}
 
 def list_users():
-    """Admin-only: list all users (requires SERVICE_ROLE_KEY)."""
+    """Admin-only: list all users (requires SERVICE_ROLE)."""
     try:
         response = supabase.auth.admin.list_users()
         return response
-    except Exception as e:
+    except Exception:
         return []

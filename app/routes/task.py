@@ -1,89 +1,112 @@
+# app/routes/task.py
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.utils.auth import verify_supabase_token
-from app.supabase_client import supabase, supabase_admin
+from typing import Optional
+from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+
+from app.utils.auth import get_current_user, User
+from app.supabase_client import supabase_admin
 
 router = APIRouter(prefix="/task", tags=["Task"])
 
-# -------------------- ASSIGN TASK (Superuser Only) --------------------
+
+class AssignBody(BaseModel):
+    title: str = Field(min_length=1)
+    description: Optional[str] = None
+    estimated_minutes: int = Field(ge=1)
+    assigned_to: str  # user id (UUID string)
+
+
 @router.post("/assign")
 def assign_task(
-    title: str,
-    description: str,
-    estimated_minutes: int,
-    assigned_to: str,
-    user_data: dict = Depends(verify_supabase_token)
+    body: AssignBody,
+    user: User = Depends(get_current_user),
 ):
     """
-    Assign a task to a user. Only superusers can perform this action.
+    Assign a task to a user. Only superusers can do this.
     """
-    current_user_id = user_data.get("user_id")
-    current_user_role = supabase.table("users").select("role").eq("id", current_user_id).execute()
-    if not current_user_role.data or current_user_role.data[0]["role"] != "superuser":
+    role_q = (
+        supabase_admin.table("users")
+        .select("role")
+        .eq("id", str(user.id))
+        .limit(1)
+        .execute()
+    )
+    if not role_q.data or role_q.data[0].get("role") != "superuser":
         raise HTTPException(status_code=403, detail="Only superusers can assign tasks.")
 
-    response = supabase_admin.table("tasks").insert({
-        "assigned_by": current_user_id,
-        "assigned_to": assigned_to,
-        "title": title,
-        "description": description,
-        "estimated_minutes": estimated_minutes
-    }).execute()
-
-    if response.data:
-        return {"status": "success", "task": response.data[0]}
-    else:
-        raise HTTPException(status_code=400, detail="Task creation failed.")
-
-
-# -------------------- FETCH MY TASKS (Employee) --------------------
-@router.get("/my-tasks")
-def get_my_tasks(user_data: dict = Depends(verify_supabase_token)):
-    """
-    Fetch all tasks assigned to the currently logged-in user.
-    """
-    current_user_id = user_data.get("user_id")
-
-    response = supabase_admin.table("tasks") \
-        .select("*") \
-        .eq("assigned_to", current_user_id) \
+    resp = (
+        supabase_admin.table("tasks")
+        .insert(
+            {
+                "assigned_by": str(user.id),
+                "assigned_to": body.assigned_to,
+                "title": body.title,
+                "description": body.description,
+                "estimated_minutes": body.estimated_minutes,
+                # optional defaults handled by DB (status/created_at, etc.)
+            }
+        )
         .execute()
+    )
 
-    if response.data is None:
-        raise HTTPException(status_code=404, detail="No tasks found.")
-    return {"status": "success", "count": len(response.data), "tasks": response.data}
+    if not resp.data:
+        raise HTTPException(status_code=400, detail="Task creation failed.")
+    return {"status": "success", "task": resp.data[0]}
 
 
-# -------------------- UPDATE TASK STATUS (Employee) --------------------
+@router.get("/my-tasks")
+def get_my_tasks(user: User = Depends(get_current_user)):
+    """
+    Fetch all tasks assigned to the current user.
+    """
+    resp = (
+        supabase_admin.table("tasks")
+        .select("*")
+        .eq("assigned_to", str(user.id))
+        .execute()
+    )
+    tasks = resp.data or []
+    return {"status": "success", "count": len(tasks), "tasks": tasks}
+
+
+class StatusBody(BaseModel):
+    task_id: str
+    new_status: str = Field(pattern="^(in_progress|completed)$")
+
+
 @router.post("/update-status")
 def update_task_status(
-    task_id: str,
-    new_status: str,
-    user_data: dict = Depends(verify_supabase_token)
+    body: StatusBody,
+    user: User = Depends(get_current_user),
 ):
     """
-    Update status of a task (in_progress / completed).
+    Update status of a task (in_progress | completed).
     Only allowed if the task belongs to the current user.
     """
-    current_user_id = user_data.get("user_id")
-
-    # Verify the task belongs to this user
-    verify_task = supabase.table("tasks").select("assigned_to, status").eq("id", task_id).execute()
-    if not verify_task.data:
+    # Verify ownership
+    verify = (
+        supabase_admin.table("tasks")
+        .select("assigned_to, status")
+        .eq("id", body.task_id)
+        .limit(1)
+        .execute()
+    )
+    if not verify.data:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if verify_task.data[0]["assigned_to"] != current_user_id:
+    if verify.data[0]["assigned_to"] != str(user.id):
         raise HTTPException(status_code=403, detail="You can only update your own tasks.")
 
-    if new_status not in ["in_progress", "completed"]:
-        raise HTTPException(status_code=400, detail="Invalid status value.")
+    update_payload = {"status": body.new_status}
+    if body.new_status == "completed":
+        update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
 
-    update_payload = {"status": new_status}
-    if new_status == "completed":
-        from datetime import datetime
-        update_payload["completed_at"] = datetime.utcnow().isoformat()
-
-    result = supabase_admin.table("tasks").update(update_payload).eq("id", task_id).execute()
-
-    if result.data:
-        return {"status": "success", "task": result.data[0]}
-    else:
+    result = (
+        supabase_admin.table("tasks")
+        .update(update_payload)
+        .eq("id", body.task_id)
+        .execute()
+    )
+    if not result.data:
         raise HTTPException(status_code=400, detail="Task update failed.")
+    return {"status": "success", "task": result.data[0]}

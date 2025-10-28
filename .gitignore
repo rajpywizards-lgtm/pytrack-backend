@@ -1,5 +1,52 @@
+# Virtual environments
+.venv/
+.venv1/
 venv/
-.idea/
+ENV/
+env/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+
+# Byte-compiled / cache
+*.egg-info/
+dist/
+build/
+
+# IDE / OS
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# PyInstaller
+*.spec
+
+# PySide / Qt build artifacts
+moc_*.cpp
+qrc_*.cpp
+
+# env files (do not commit .env with secrets)
 .env
+*.env
+
+# local DB, sqlite files if any
+*.sqlite3
+*.db
+
+# mac/windows generated
+desktop.ini
+
+# PyCharm project settings
+.idea/
+!.idea/.gitignore
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
